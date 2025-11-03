@@ -47,19 +47,47 @@ retry_strategy = Retry(
 adapter = HTTPAdapter(max_retries=retry_strategy)
 SESSION.mount("http://", adapter)
 SESSION.mount("https://", adapter)
+_DEFAULT_USER_AGENTS = [
+    os.getenv("CUSTOM_USER_AGENT", "").strip() or (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/123.0.0.0 Safari/537.36"
+    ),
+    (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_4 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15"
+    ),
+    (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/122.0.6261.128 Safari/537.36"
+    ),
+]
+
 BROWSER_HEADERS = {
-    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                   "AppleWebKit/537.36 (KHTML, like Gecko) "
-                   "Chrome/119.0.0.0 Safari/537.36"),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
     "Cache-Control": "no-cache",
     "Pragma": "no-cache",
     "Upgrade-Insecure-Requests": "1",
+    "Connection": "keep-alive",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Sec-Ch-Ua": '"Not.A/Brand";v="24", "Chromium";v="123", "Google Chrome";v="123"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
 }
 
 def _origin(u: str) -> str:
     p = urlparse(u);  return urlunparse((p.scheme, p.netloc, "", "", "", ""))
+
+def _choose_user_agent(attempt: int) -> str:
+    # Cycle through a desktop Chrome, Safari, and Linux Chrome UA.
+    # Later attempts re-use the options to avoid unbounded growth.
+    return _DEFAULT_USER_AGENTS[attempt % len(_DEFAULT_USER_AGENTS)]
+
 
 def fetch_html_with_fallback(url: str, timeout: float) -> str:
     """
@@ -68,20 +96,24 @@ def fetch_html_with_fallback(url: str, timeout: float) -> str:
       2) If 200, try <link rel='amphtml'>
       3) Try common AMP variants: /amp, ?amp=1, ?outputType=amp
     """
-    def _get(u, referer=None):
-        h = dict(BROWSER_HEADERS);  h["Referer"] = referer or _origin(u)
+    def _get(u, *, referer=None, attempt=0):
+        h = dict(BROWSER_HEADERS)
+        h["Referer"] = referer or _origin(u)
+        h["User-Agent"] = _choose_user_agent(attempt)
         return SESSION.get(u, headers=h, timeout=timeout, allow_redirects=True)
 
     last_err = None
 
     # Tier 1: direct with brief retries
-    for attempt in range(3):
+    for attempt in range(len(_DEFAULT_USER_AGENTS) * 2):
         try:
-            resp = _get(url)
+            resp = _get(url, attempt=attempt)
             if resp.status_code == 200 and "<html" in resp.text.lower():
                 return resp.text
             if resp.status_code in (403, 404, 429, 503):
                 last_err = f"{resp.status_code} {resp.reason}"
+                if resp.status_code == 403:
+                    SESSION.cookies.clear()
                 time.sleep(0.6 * (attempt + 1))
                 continue
             resp.raise_for_status()
@@ -92,13 +124,13 @@ def fetch_html_with_fallback(url: str, timeout: float) -> str:
 
     # Tier 2: discover explicit amphtml link
     try:
-        resp = _get(url)
+        resp = _get(url, attempt=0)
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, "html.parser")
             amp = soup.find("link", rel=lambda v: v and "amphtml" in v.lower())
             if amp and amp.get("href"):
                 amp_url = amp["href"]
-                amp_resp = _get(amp_url, referer=url)
+                amp_resp = _get(amp_url, referer=url, attempt=1)
                 if amp_resp.status_code == 200:
                     return amp_resp.text
     except Exception:
@@ -114,8 +146,8 @@ def fetch_html_with_fallback(url: str, timeout: float) -> str:
             urlunparse((p.scheme, p.netloc, p.path, p.params,
                         ("outputType=amp" if not p.query else p.query + "&outputType=amp"), p.fragment)),
         ]
-        for cand in candidates:
-            amp_resp = _get(cand, referer=url)
+        for index, cand in enumerate(candidates, start=1):
+            amp_resp = _get(cand, referer=url, attempt=index)
             if amp_resp.status_code == 200:
                 return amp_resp.text
     except Exception:
