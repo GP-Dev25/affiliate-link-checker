@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Affiliate Link Checker</title>
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+</head>
+<body class="bg-[#fcfaf8] text-[#1c140d] font-sans p-8">
+  <header class="flex justify-between items-center border-b border-[#f4ede7] pb-4">
+    <h1 class="text-2xl font-bold">Affiliate Link Checker</h1>
+    <button id="exportBtn" class="hidden bg-[#f4ede7] px-3 py-1 rounded">Export CSV</button>
+  </header>
+
+  <!-- controls -->
+  <div class="mt-6 space-y-4 max-w-xl">
+    <input id="brand" type="text" placeholder="Brand Domain (e.g., sitkagear.com)" class="w-full p-3 rounded bg-[#f4ede7]" />
+    <input id="affiliateKeywords" type="text"
+      placeholder="Affiliate Domains/Patterns (comma separated, e.g., avantlink, avad=)"
+      class="w-full p-3 rounded bg-[#f4ede7]" />
+
+    <!-- date range inputs (kept for UI, not used when AvantLink is disabled) -->
+    <div class="flex gap-4">
+      <div class="flex-1">
+        <label for="startDate" class="block text-sm font-medium mb-1">Start Date</label>
+        <input id="startDate" type="date" class="w-full p-3 rounded bg-[#f4ede7]" />
+      </div>
+      <div class="flex-1">
+        <label for="endDate" class="block text-sm font-medium mb-1">End Date</label>
+        <input id="endDate" type="date" class="w-full p-3 rounded bg-[#f4ede7]" />
+      </div>
+    </div>
+
+    <textarea id="urls" rows="4" placeholder="Article URLs (one per line)"
+      class="w-full p-3 rounded bg-[#f4ede7]"></textarea>
+    <button id="checkBtn" class="bg-[#f27f0c] px-6 py-2 rounded text-white font-bold">Check for Affiliate Links</button>
+    <div id="progress-container" class="hidden h-1 bg-[#2A2A2A] rounded overflow-hidden">
+      <div id="progress-bar" class="h-full bg-[#3AD9A5] w-0 transition-all"></div>
+    </div>
+  </div>
+
+  <!-- results -->
+  <div class="mt-8 overflow-auto">
+    <table id="resultsTable" class="table-fixed w-full border border-[#e8dbce] rounded-lg overflow-hidden">
+      <thead class="bg-[#FCFAF8]">
+        <tr class="divide-x divide-[#e8dbce]">
+          <th class="text-left px-4 py-2 w-1/5">Article URL</th>
+          <th class="text-left px-4 py-2 w-1/5">Avantlink URL</th>
+          <th class="text-left px-4 py-2 w-1/5">Brand URL</th>
+          <th class="text-left px-4 py-2 w-1/6">Affiliate Link?</th>
+          <th class="text-left px-4 py-2 w-1/6">Direct Website?</th>
+          <th class="text-left px-4 py-2 w-1/6">Clicks</th>
+          <th class="text-left px-4 py-2 w-1/6">Sales</th>
+          <th class="text-left px-4 py-2 w-1/6">Revenue</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-[#e8dbce]"></tbody>
+    </table>
+  </div>
+
+  <script>
+    const checkBtn = document.getElementById('checkBtn');
+    const exportBtn = document.getElementById('exportBtn');
+    const progressCt = document.getElementById('progress-container');
+    const progressBar = document.getElementById('progress-bar');
+    const resultsBody = document.querySelector('#resultsTable tbody');
+
+    let lastResults = [];
+    let lastBrand = '';
+    let lastAffKs = [];
+
+    function setBusy(busy) {
+      checkBtn.disabled = busy;
+      checkBtn.classList.toggle('opacity-60', busy);
+    }
+
+    checkBtn.onclick = async () => {
+      // gather inputs
+      const urls = document.getElementById('urls').value.split('\n').map(u => u.trim()).filter(Boolean);
+      lastBrand = document.getElementById('brand').value.trim().toLowerCase();
+      lastAffKs = document.getElementById('affiliateKeywords').value.split(',').map(k => k.trim().toLowerCase()).filter(Boolean);
+
+      if (!urls.length) {
+        alert('Please paste at least one URL.');
+        return;
+      }
+      if (!lastBrand) {
+        alert('Please enter the brand domain (e.g., sitkagear.com).');
+        return;
+      }
+
+      // reset UI
+      resultsBody.innerHTML = '';
+      exportBtn.classList.add('hidden');
+      progressCt.classList.remove('hidden'); progressBar.style.width = '0%';
+      lastResults = [];
+      setBusy(true);
+
+      // process URLs
+      for (let i = 0; i < urls.length; i++) {
+        const url = urls[i];
+        try {
+          const res = await fetch('/api/check-links', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ urls: [url], brand: lastBrand, affiliateKeywords: lastAffKs })
+          });
+          const data = await res.json();
+          // normalize into our row schema
+          const item = data[0] || { url, link: null, status: 'Error' };
+
+          const link = (item.link || '').toLowerCase();
+          const isAff = !!(item.link && lastAffKs.some(kw => link.includes(kw)));
+          const isDir = !!(item.link && !isAff && link.includes(lastBrand));
+
+          lastResults.push({
+            articleUrl: url,
+            affiliateUrl: isAff ? item.link : '',
+            brandUrl: isDir ? item.link : '',
+            isAffiliate: isAff,
+            isDirect: isDir,
+            clicks: 0,
+            sales: 0,
+            revenue: 0
+          });
+        } catch (e) {
+          lastResults.push({
+            articleUrl: url,
+            affiliateUrl: '',
+            brandUrl: '',
+            isAffiliate: false,
+            isDirect: false,
+            clicks: 0,
+            sales: 0,
+            revenue: 0
+          });
+        }
+        progressBar.style.width = `${Math.round((i + 1) / urls.length * 100)}%`;
+      }
+      progressCt.classList.add('hidden');
+      setBusy(false);
+
+      // render table
+      let affCount = 0, dirCount = 0;
+      resultsBody.innerHTML = '';
+      lastResults.forEach(row => {
+        if (row.isAffiliate) affCount++;
+        if (row.isDirect) dirCount++;
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td class="truncate px-4 py-2">${row.articleUrl}</td>
+          <td class="truncate px-4 py-2">${row.affiliateUrl}</td>
+          <td class="truncate px-4 py-2">${row.brandUrl}</td>
+          <td class="px-4 py-2">${row.isAffiliate ? 'Yes' : 'No'}</td>
+          <td class="px-4 py-2">${row.isDirect ? 'Yes' : 'No'}</td>
+          <td class="px-4 py-2">${row.clicks}</td>
+          <td class="px-4 py-2">${row.sales}</td>
+          <td class="px-4 py-2">${row.revenue.toFixed(2)}</td>
+        `;
+        resultsBody.append(tr);
+      });
+
+      // totals row
+      const totalsRow = document.createElement('tr');
+      totalsRow.innerHTML = `
+        <td colspan="3" class="px-4 py-2 font-bold">Totals:</td>
+        <td class="px-4 py-2 font-bold">${affCount}</td>
+        <td class="px-4 py-2 font-bold">${dirCount}</td>
+        <td colspan="3"></td>
+      `;
+      resultsBody.append(totalsRow);
+
+      // show export
+      exportBtn.classList.remove('hidden');
+    };
+
+    exportBtn.onclick = () => {
+      if (!lastResults.length) return;
+
+      const header = [
+        'Article URL',
+        'Avantlink URL',
+        'Brand URL',
+        'Affiliate?',
+        'Direct?',
+        'Clicks',
+        'Sales',
+        'Revenue'
+      ];
+
+      const rows = lastResults.map(r => ([
+        r.articleUrl,
+        r.affiliateUrl,
+        r.brandUrl,
+        r.isAffiliate ? 'Yes' : 'No',
+        r.isDirect ? 'Yes' : 'No',
+        r.clicks,
+        r.sales,
+        r.revenue.toFixed(2)
+      ]));
+
+      // Add totals row mirroring the table’s Totals
+      const affTotal = lastResults.filter(r => r.isAffiliate).length;
+      const dirTotal = lastResults.filter(r => r.isDirect).length;
+      const clicksTotal = lastResults.reduce((s, r) => s + Number(r.clicks || 0), 0);
+      const salesTotal  = lastResults.reduce((s, r) => s + Number(r.sales || 0), 0);
+      const revTotal    = lastResults.reduce((s, r) => s + Number(r.revenue || 0), 0);
+
+      rows.push(['Totals', '', '', String(affTotal), String(dirTotal), String(clicksTotal), String(salesTotal), revTotal.toFixed(2)]);
+
+      const csv = [header, ...rows]
+        .map(row => row.map(val => {
+          const s = String(val ?? '');
+          return `"${s.replace(/"/g, '""')}"`;
+        }).join(','))
+        .join('\n');
+
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'affiliate_report.csv';
+      document.body.appendChild(a);
+      a.click();
+      URL.revokeObjectURL(a.href);
+      a.remove();
+    };
+  </script>
+</body>
+</html>
