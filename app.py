@@ -4,12 +4,14 @@ import csv
 import time
 import logging
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Optional headless flag
 USE_HEADLESS = os.getenv("USE_HEADLESS", "false").lower() == "true"
@@ -34,6 +36,17 @@ REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "20"))
 
 # --- Browser-like fetch session ---
 SESSION = requests.Session()
+retry_strategy = Retry(
+    total=3,
+    status_forcelist=(403, 404, 408, 409, 429, 500, 502, 503, 504),
+    allowed_methods=("HEAD", "GET", "OPTIONS"),
+    backoff_factor=0.6,
+    raise_on_status=False,
+    respect_retry_after_header=True,
+)
+adapter = HTTPAdapter(max_retries=retry_strategy)
+SESSION.mount("http://", adapter)
+SESSION.mount("https://", adapter)
 BROWSER_HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                    "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -110,6 +123,17 @@ def fetch_html_with_fallback(url: str, timeout: float) -> str:
 
     raise requests.RequestException(f"Blocked or unavailable: {last_err or 'unknown error'}")
 
+
+def _unique_preserve_order(values):
+    seen = set()
+    out = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
 # --- Optional headless fallback (Playwright) ---
 # Only imported/used if USE_HEADLESS=true
 if USE_HEADLESS:
@@ -146,7 +170,7 @@ else:
 # --- Routes ---
 @app.route("/", methods=["GET"])
 def index():
-    return app.send_static_file("index.html")
+    return send_from_directory(BASE_DIR, "index.html")
 
 @app.route("/healthz", methods=["GET"])
 def health():
@@ -178,31 +202,61 @@ def check_links():
             html = fetch_html_strict(url, timeout=REQUEST_TIMEOUT)
             soup = BeautifulSoup(html, "html.parser")
             anchors = soup.find_all("a", href=True)
-            hrefs = [a["href"].strip() for a in anchors if a.get("href")]
 
-            affiliate_href = next(
-                (h for h in hrefs if any(kw in h.lower() for kw in affiliate_keywords)),
-                None
-            )
-            if affiliate_href:
-                results.append({"url": url, "link": affiliate_href, "status": "✅ Affiliate link to brand found"})
-                continue
+            hrefs = []
+            for anchor in anchors:
+                raw_href = anchor.get("href")
+                if not raw_href:
+                    continue
+                normalized = urljoin(url, raw_href.strip())
+                if not normalized:
+                    continue
+                hrefs.append(normalized)
 
-            direct_href = next(
-                (h for h in hrefs if brand in h.lower() and not any(kw in h.lower() for kw in affiliate_keywords)),
-                None
-            )
-            if direct_href:
-                results.append({"url": url, "link": direct_href, "status": "✅ Direct link to brand found"})
-            else:
-                results.append({"url": url, "link": None, "status": "❌ No relevant link found"})
+            hrefs = _unique_preserve_order(hrefs)
+
+            affiliate_links = [
+                h for h in hrefs if any(kw in h.lower() for kw in affiliate_keywords)
+            ] if affiliate_keywords else []
+
+            direct_links = [
+                h for h in hrefs
+                if brand in urlparse(h).netloc.lower() and not any(kw in h.lower() for kw in affiliate_keywords)
+            ]
+
+            status_parts = []
+            if affiliate_links:
+                status_parts.append(f"{len(affiliate_links)} affiliate link(s) matched")
+            if direct_links:
+                status_parts.append(f"{len(direct_links)} direct link(s) matched")
+            if not status_parts:
+                status_parts.append("No relevant link found")
+
+            results.append({
+                "url": url,
+                "affiliate_links": affiliate_links,
+                "direct_links": direct_links,
+                "status": "; ".join(status_parts),
+            })
 
         except requests.RequestException as e:
             logger.warning("Fetch error for %s: %s", url, e, exc_info=False)
-            results.append({"url": url, "link": None, "status": f"Error fetching page (likely blocked): {e}"})
+            results.append({
+                "url": url,
+                "affiliate_links": [],
+                "direct_links": [],
+                "status": "Error fetching page (likely blocked)",
+                "error": str(e),
+            })
         except Exception as e:
             logger.exception("Unexpected error for %s", url)
-            results.append({"url": url, "link": None, "status": f"Unexpected error: {e}"})
+            results.append({
+                "url": url,
+                "affiliate_links": [],
+                "direct_links": [],
+                "status": "Unexpected error",
+                "error": str(e),
+            })
 
     return jsonify(results), 200
 
