@@ -45,10 +45,11 @@
       <thead class="bg-[#FCFAF8]">
         <tr class="divide-x divide-[#e8dbce]">
           <th class="text-left px-4 py-2 w-1/5">Article URL</th>
-          <th class="text-left px-4 py-2 w-1/5">Avantlink URL</th>
-          <th class="text-left px-4 py-2 w-1/5">Brand URL</th>
-          <th class="text-left px-4 py-2 w-1/6">Affiliate Link?</th>
-          <th class="text-left px-4 py-2 w-1/6">Direct Website?</th>
+          <th class="text-left px-4 py-2 w-1/5">Affiliate Links</th>
+          <th class="text-left px-4 py-2 w-1/5">Brand Links</th>
+          <th class="text-left px-4 py-2 w-1/6">Affiliate Count</th>
+          <th class="text-left px-4 py-2 w-1/6">Direct Count</th>
+          <th class="text-left px-4 py-2 w-1/6">Status</th>
           <th class="text-left px-4 py-2 w-1/6">Clicks</th>
           <th class="text-left px-4 py-2 w-1/6">Sales</th>
           <th class="text-left px-4 py-2 w-1/6">Revenue</th>
@@ -96,46 +97,41 @@
       lastResults = [];
       setBusy(true);
 
-      // process URLs
-      for (let i = 0; i < urls.length; i++) {
-        const url = urls[i];
-        try {
-          const res = await fetch('/api/check-links', {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ urls: [url], brand: lastBrand, affiliateKeywords: lastAffKs })
-          });
-          const data = await res.json();
-          // normalize into our row schema
-          const item = data[0] || { url, link: null, status: 'Error' };
+      try {
+        progressBar.style.width = '30%';
+        const res = await fetch('/api/check-links', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ urls, brand: lastBrand, affiliateKeywords: lastAffKs })
+        });
 
-          const link = (item.link || '').toLowerCase();
-          const isAff = !!(item.link && lastAffKs.some(kw => link.includes(kw)));
-          const isDir = !!(item.link && !isAff && link.includes(lastBrand));
-
-          lastResults.push({
-            articleUrl: url,
-            affiliateUrl: isAff ? item.link : '',
-            brandUrl: isDir ? item.link : '',
-            isAffiliate: isAff,
-            isDirect: isDir,
-            clicks: 0,
-            sales: 0,
-            revenue: 0
-          });
-        } catch (e) {
-          lastResults.push({
-            articleUrl: url,
-            affiliateUrl: '',
-            brandUrl: '',
-            isAffiliate: false,
-            isDirect: false,
-            clicks: 0,
-            sales: 0,
-            revenue: 0
-          });
+        if (!res.ok) {
+          const errorText = await res.text();
+          throw new Error(errorText || `Request failed with status ${res.status}`);
         }
-        progressBar.style.width = `${Math.round((i + 1) / urls.length * 100)}%`;
+
+        const data = await res.json();
+
+        lastResults = data.map(item => ({
+          articleUrl: item.url,
+          affiliateUrls: Array.isArray(item.affiliate_links) ? item.affiliate_links : [],
+          brandUrls: Array.isArray(item.direct_links) ? item.direct_links : [],
+          status: item.status || '',
+          error: item.error || '',
+          clicks: Number(item.clicks || 0),
+          sales: Number(item.sales || 0),
+          revenue: Number(item.revenue || 0)
+        }));
+      } catch (err) {
+        console.error(err);
+        alert(`Something went wrong while checking links: ${err.message}`);
+        progressCt.classList.add('hidden');
+        progressBar.style.width = '0%';
+        setBusy(false);
+        return;
       }
+
+      progressBar.style.width = '100%';
       progressCt.classList.add('hidden');
       setBusy(false);
 
@@ -143,16 +139,24 @@
       let affCount = 0, dirCount = 0;
       resultsBody.innerHTML = '';
       lastResults.forEach(row => {
-        if (row.isAffiliate) affCount++;
-        if (row.isDirect) dirCount++;
+        affCount += row.affiliateUrls.length;
+        dirCount += row.brandUrls.length;
 
         const tr = document.createElement('tr');
+        const formatLinks = (links) => {
+          if (!links.length) return '';
+          return links.map(link => `<a href="${link}" class="underline text-blue-600" target="_blank" rel="noopener noreferrer">${link}</a>`).join('<br />');
+        };
+
+        const statusHtml = `${row.status || ''}${row.error ? `<div class="text-sm text-red-600">${row.error}</div>` : ''}`;
+
         tr.innerHTML = `
           <td class="truncate px-4 py-2">${row.articleUrl}</td>
-          <td class="truncate px-4 py-2">${row.affiliateUrl}</td>
-          <td class="truncate px-4 py-2">${row.brandUrl}</td>
-          <td class="px-4 py-2">${row.isAffiliate ? 'Yes' : 'No'}</td>
-          <td class="px-4 py-2">${row.isDirect ? 'Yes' : 'No'}</td>
+          <td class="px-4 py-2 space-y-1">${formatLinks(row.affiliateUrls)}</td>
+          <td class="px-4 py-2 space-y-1">${formatLinks(row.brandUrls)}</td>
+          <td class="px-4 py-2">${row.affiliateUrls.length}</td>
+          <td class="px-4 py-2">${row.brandUrls.length}</td>
+          <td class="px-4 py-2">${statusHtml}</td>
           <td class="px-4 py-2">${row.clicks}</td>
           <td class="px-4 py-2">${row.sales}</td>
           <td class="px-4 py-2">${row.revenue.toFixed(2)}</td>
@@ -167,6 +171,7 @@
         <td class="px-4 py-2 font-bold">${affCount}</td>
         <td class="px-4 py-2 font-bold">${dirCount}</td>
         <td colspan="3"></td>
+        <td></td>
       `;
       resultsBody.append(totalsRow);
 
@@ -179,10 +184,11 @@
 
       const header = [
         'Article URL',
-        'Avantlink URL',
-        'Brand URL',
-        'Affiliate?',
-        'Direct?',
+        'Affiliate Links',
+        'Brand Links',
+        'Affiliate Count',
+        'Direct Count',
+        'Status',
         'Clicks',
         'Sales',
         'Revenue'
@@ -190,23 +196,24 @@
 
       const rows = lastResults.map(r => ([
         r.articleUrl,
-        r.affiliateUrl,
-        r.brandUrl,
-        r.isAffiliate ? 'Yes' : 'No',
-        r.isDirect ? 'Yes' : 'No',
-        r.clicks,
-        r.sales,
+        r.affiliateUrls.join(' | '),
+        r.brandUrls.join(' | '),
+        String(r.affiliateUrls.length),
+        String(r.brandUrls.length),
+        r.error ? `${r.status} (Error: ${r.error})` : r.status,
+        String(r.clicks),
+        String(r.sales),
         r.revenue.toFixed(2)
       ]));
 
       // Add totals row mirroring the table’s Totals
-      const affTotal = lastResults.filter(r => r.isAffiliate).length;
-      const dirTotal = lastResults.filter(r => r.isDirect).length;
+      const affTotal = lastResults.reduce((s, r) => s + r.affiliateUrls.length, 0);
+      const dirTotal = lastResults.reduce((s, r) => s + r.brandUrls.length, 0);
       const clicksTotal = lastResults.reduce((s, r) => s + Number(r.clicks || 0), 0);
       const salesTotal  = lastResults.reduce((s, r) => s + Number(r.sales || 0), 0);
       const revTotal    = lastResults.reduce((s, r) => s + Number(r.revenue || 0), 0);
 
-      rows.push(['Totals', '', '', String(affTotal), String(dirTotal), String(clicksTotal), String(salesTotal), revTotal.toFixed(2)]);
+      rows.push(['Totals', '', '', String(affTotal), String(dirTotal), '', String(clicksTotal), String(salesTotal), revTotal.toFixed(2)]);
 
       const csv = [header, ...rows]
         .map(row => row.map(val => {
