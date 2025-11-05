@@ -2,8 +2,10 @@ import os
 import io
 import csv
 import time
+import random
 import logging
 from datetime import datetime, timedelta, timezone
+from threading import Lock
 from urllib.parse import urljoin, urlparse, urlunparse
 
 import requests
@@ -33,6 +35,7 @@ AV_KEY = os.environ.get("AV_AUTH_KEY")           # REQUIRED in prod
 MERCHANT_ID = os.environ.get("AV_MERCHANT_ID")   # REQUIRED in prod
 REPORT_ID = os.environ.get("AV_REPORT_ID", "20")
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "20"))
+FETCH_THROTTLE_SECONDS = float(os.getenv("FETCH_THROTTLE_SECONDS", "1.0"))
 
 # --- Browser-like fetch session ---
 SESSION = requests.Session()
@@ -80,6 +83,9 @@ BROWSER_HEADERS = {
     "Sec-Ch-Ua-Platform": '"Windows"',
 }
 
+_HOST_LAST_FETCH: dict[str, float] = {}
+_HOST_FETCH_LOCK = Lock()
+
 def _origin(u: str) -> str:
     p = urlparse(u);  return urlunparse((p.scheme, p.netloc, "", "", "", ""))
 
@@ -87,6 +93,29 @@ def _choose_user_agent(attempt: int) -> str:
     # Cycle through a desktop Chrome, Safari, and Linux Chrome UA.
     # Later attempts re-use the options to avoid unbounded growth.
     return _DEFAULT_USER_AGENTS[attempt % len(_DEFAULT_USER_AGENTS)]
+
+
+def _respect_host_throttle(url: str) -> None:
+    """Sleep briefly to avoid hammering the same host repeatedly."""
+    if FETCH_THROTTLE_SECONDS <= 0:
+        return
+
+    host = urlparse(url).netloc.lower()
+    if not host:
+        return
+
+    now = time.monotonic()
+    jitter_upper = max(0.05, min(0.35, FETCH_THROTTLE_SECONDS))
+    jitter = random.uniform(0.01, jitter_upper)
+
+    with _HOST_FETCH_LOCK:
+        last = _HOST_LAST_FETCH.get(host)
+        wait = 0.0 if last is None else max(0.0, (last + FETCH_THROTTLE_SECONDS) - now)
+        _HOST_LAST_FETCH[host] = now + wait + jitter
+
+    if wait:
+        time.sleep(wait)
+    time.sleep(jitter)
 
 
 def fetch_html_with_fallback(url: str, timeout: float) -> str:
@@ -97,6 +126,7 @@ def fetch_html_with_fallback(url: str, timeout: float) -> str:
       3) Try common AMP variants: /amp, ?amp=1, ?outputType=amp
     """
     def _get(u, *, referer=None, attempt=0):
+        _respect_host_throttle(u)
         h = dict(BROWSER_HEADERS)
         h["Referer"] = referer or _origin(u)
         h["User-Agent"] = _choose_user_agent(attempt)
