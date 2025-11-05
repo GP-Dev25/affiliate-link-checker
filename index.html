@@ -3,128 +3,96 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Affiliate Link Checker</title>
+  <title>Link Extractor</title>
   <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
 </head>
 <body class="bg-[#fcfaf8] text-[#1c140d] font-sans p-8">
-  <header class="flex justify-between items-center border-b border-[#f4ede7] pb-4">
-    <h1 class="text-2xl font-bold">Affiliate Link Checker</h1>
-    <button id="exportBtn" class="hidden bg-[#f4ede7] px-3 py-1 rounded">Export CSV</button>
+  <header class="border-b border-[#f4ede7] pb-4 mb-6">
+    <h1 class="text-2xl font-bold">Link Extractor</h1>
+    <p class="text-sm text-[#5b4f45] mt-2 max-w-3xl">
+      Paste one or more page URLs below and the app will crawl each page, collect all
+      discovered hyperlinks, and display them in the table.
+    </p>
   </header>
 
-  <!-- controls -->
-  <div class="mt-6 space-y-4 max-w-xl">
-    <input id="brand" type="text" placeholder="Brand Domain (e.g., sitkagear.com)" class="w-full p-3 rounded bg-[#f4ede7]" />
-    <input id="affiliateKeywords" type="text"
-      placeholder="Affiliate Domains/Patterns (comma separated, e.g., avantlink, avad=)"
-      class="w-full p-3 rounded bg-[#f4ede7]" />
-
-    <!-- date range inputs (kept for UI, not used when AvantLink is disabled) -->
-    <div class="flex gap-4">
-      <div class="flex-1">
-        <label for="startDate" class="block text-sm font-medium mb-1">Start Date</label>
-        <input id="startDate" type="date" class="w-full p-3 rounded bg-[#f4ede7]" />
+  <main class="max-w-4xl space-y-6">
+    <section class="space-y-3">
+      <label for="urls" class="block text-sm font-medium">Page URLs (one per line)</label>
+      <textarea id="urls" rows="5" placeholder="https://example.com/article"
+        class="w-full p-3 rounded bg-[#f4ede7] border border-transparent focus:border-[#f27f0c] focus:outline-none"></textarea>
+      <button id="checkBtn" class="bg-[#f27f0c] px-6 py-2 rounded text-white font-bold transition disabled:opacity-60">
+        Extract Links
+      </button>
+      <div id="progress-container" class="hidden h-1 bg-[#2A2A2A] rounded overflow-hidden">
+        <div id="progress-bar" class="h-full bg-[#3AD9A5] w-0 transition-all"></div>
       </div>
-      <div class="flex-1">
-        <label for="endDate" class="block text-sm font-medium mb-1">End Date</label>
-        <input id="endDate" type="date" class="w-full p-3 rounded bg-[#f4ede7]" />
-      </div>
-    </div>
+    </section>
 
-    <textarea id="urls" rows="4" placeholder="Article URLs (one per line)"
-      class="w-full p-3 rounded bg-[#f4ede7]"></textarea>
-    <button id="checkBtn" class="bg-[#f27f0c] px-6 py-2 rounded text-white font-bold">Check for Affiliate Links</button>
-    <div id="progress-container" class="hidden h-1 bg-[#2A2A2A] rounded overflow-hidden">
-      <div id="progress-bar" class="h-full bg-[#3AD9A5] w-0 transition-all"></div>
-    </div>
-  </div>
-
-  <!-- results -->
-  <div class="mt-8 overflow-auto">
-    <table id="resultsTable" class="table-fixed w-full border border-[#e8dbce] rounded-lg overflow-hidden">
-      <thead class="bg-[#FCFAF8]">
-        <tr class="divide-x divide-[#e8dbce]">
-          <th class="text-left px-4 py-2 w-1/5">Article URL</th>
-          <th class="text-left px-4 py-2 w-1/5">Affiliate Links</th>
-          <th class="text-left px-4 py-2 w-1/5">Brand Links</th>
-          <th class="text-left px-4 py-2 w-1/6">Affiliate Count</th>
-          <th class="text-left px-4 py-2 w-1/6">Direct Count</th>
-          <th class="text-left px-4 py-2 w-1/6">Status</th>
-          <th class="text-left px-4 py-2 w-1/6">Clicks</th>
-          <th class="text-left px-4 py-2 w-1/6">Sales</th>
-          <th class="text-left px-4 py-2 w-1/6">Revenue</th>
-        </tr>
-      </thead>
-      <tbody class="divide-y divide-[#e8dbce]"></tbody>
-    </table>
-  </div>
+    <section>
+      <table class="table-fixed w-full border border-[#e8dbce] rounded-lg overflow-hidden" id="resultsTable">
+        <thead class="bg-[#f4ede7] text-left">
+          <tr class="divide-x divide-[#e8dbce]">
+            <th class="px-4 py-2 w-1/4">Page URL</th>
+            <th class="px-4 py-2 w-1/6">Link Count</th>
+            <th class="px-4 py-2">Links Found</th>
+            <th class="px-4 py-2 w-1/5">Status</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-[#e8dbce]"></tbody>
+      </table>
+    </section>
+  </main>
 
   <script>
     const checkBtn = document.getElementById('checkBtn');
-    const exportBtn = document.getElementById('exportBtn');
     const progressCt = document.getElementById('progress-container');
     const progressBar = document.getElementById('progress-bar');
     const resultsBody = document.querySelector('#resultsTable tbody');
 
-    let lastResults = [];
-    let lastBrand = '';
-    let lastAffKs = [];
-
     function setBusy(busy) {
       checkBtn.disabled = busy;
-      checkBtn.classList.toggle('opacity-60', busy);
+      if (busy) {
+        checkBtn.classList.add('opacity-60');
+      } else {
+        checkBtn.classList.remove('opacity-60');
+      }
     }
 
-    checkBtn.onclick = async () => {
-      // gather inputs
-      const urls = document.getElementById('urls').value.split('\n').map(u => u.trim()).filter(Boolean);
-      lastBrand = document.getElementById('brand').value.trim().toLowerCase();
-      lastAffKs = document.getElementById('affiliateKeywords').value.split(',').map(k => k.trim().toLowerCase()).filter(Boolean);
+    checkBtn.addEventListener('click', async () => {
+      const urls = document.getElementById('urls')
+        .value
+        .split('\n')
+        .map(u => u.trim())
+        .filter(Boolean);
 
       if (!urls.length) {
-        alert('Please paste at least one URL.');
-        return;
-      }
-      if (!lastBrand) {
-        alert('Please enter the brand domain (e.g., sitkagear.com).');
+        alert('Please enter at least one URL.');
         return;
       }
 
-      // reset UI
       resultsBody.innerHTML = '';
-      exportBtn.classList.add('hidden');
-      progressCt.classList.remove('hidden'); progressBar.style.width = '0%';
-      lastResults = [];
+      progressCt.classList.remove('hidden');
+      progressBar.style.width = '0%';
       setBusy(true);
 
+      let results = [];
       try {
         progressBar.style.width = '30%';
-        const res = await fetch('/api/check-links', {
+        const response = await fetch('/api/check-links', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ urls, brand: lastBrand, affiliateKeywords: lastAffKs })
+          body: JSON.stringify({ urls })
         });
 
-        if (!res.ok) {
-          const errorText = await res.text();
-          throw new Error(errorText || `Request failed with status ${res.status}`);
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(text || `Request failed with status ${response.status}`);
         }
 
-        const data = await res.json();
-
-        lastResults = data.map(item => ({
-          articleUrl: item.url,
-          affiliateUrls: Array.isArray(item.affiliate_links) ? item.affiliate_links : [],
-          brandUrls: Array.isArray(item.direct_links) ? item.direct_links : [],
-          status: item.status || '',
-          error: item.error || '',
-          clicks: Number(item.clicks || 0),
-          sales: Number(item.sales || 0),
-          revenue: Number(item.revenue || 0)
-        }));
-      } catch (err) {
-        console.error(err);
-        alert(`Something went wrong while checking links: ${err.message}`);
+        results = await response.json();
+      } catch (error) {
+        console.error(error);
+        alert(`Something went wrong: ${error.message}`);
         progressCt.classList.add('hidden');
         progressBar.style.width = '0%';
         setBusy(false);
@@ -132,105 +100,30 @@
       }
 
       progressBar.style.width = '100%';
-      progressCt.classList.add('hidden');
+      setTimeout(() => progressCt.classList.add('hidden'), 200);
       setBusy(false);
 
-      // render table
-      let affCount = 0, dirCount = 0;
-      resultsBody.innerHTML = '';
-      lastResults.forEach(row => {
-        affCount += row.affiliateUrls.length;
-        dirCount += row.brandUrls.length;
-
+      results.forEach(item => {
         const tr = document.createElement('tr');
-        const formatLinks = (links) => {
-          if (!links.length) return '';
-          return links.map(link => `<a href="${link}" class="underline text-blue-600" target="_blank" rel="noopener noreferrer">${link}</a>`).join('<br />');
-        };
+        const links = Array.isArray(item.links) ? item.links : [];
+        const status = item.error
+          ? `${item.status || ''}<div class="text-sm text-red-600">${item.error}</div>`
+          : item.status || '';
 
-        const statusHtml = `${row.status || ''}${row.error ? `<div class="text-sm text-red-600">${row.error}</div>` : ''}`;
+        const linkHtml = links.map(link => (
+          `<a href="${link}" class="underline text-blue-600" target="_blank" rel="noopener noreferrer">${link}</a>`
+        )).join('<br />');
 
         tr.innerHTML = `
-          <td class="truncate px-4 py-2">${row.articleUrl}</td>
-          <td class="px-4 py-2 space-y-1">${formatLinks(row.affiliateUrls)}</td>
-          <td class="px-4 py-2 space-y-1">${formatLinks(row.brandUrls)}</td>
-          <td class="px-4 py-2">${row.affiliateUrls.length}</td>
-          <td class="px-4 py-2">${row.brandUrls.length}</td>
-          <td class="px-4 py-2">${statusHtml}</td>
-          <td class="px-4 py-2">${row.clicks}</td>
-          <td class="px-4 py-2">${row.sales}</td>
-          <td class="px-4 py-2">${row.revenue.toFixed(2)}</td>
+          <td class="px-4 py-2 align-top break-all">${item.url}</td>
+          <td class="px-4 py-2 align-top">${links.length}</td>
+          <td class="px-4 py-2 align-top space-y-1">${linkHtml}</td>
+          <td class="px-4 py-2 align-top">${status}</td>
         `;
+
         resultsBody.append(tr);
       });
-
-      // totals row
-      const totalsRow = document.createElement('tr');
-      totalsRow.innerHTML = `
-        <td colspan="3" class="px-4 py-2 font-bold">Totals:</td>
-        <td class="px-4 py-2 font-bold">${affCount}</td>
-        <td class="px-4 py-2 font-bold">${dirCount}</td>
-        <td colspan="3"></td>
-        <td></td>
-      `;
-      resultsBody.append(totalsRow);
-
-      // show export
-      exportBtn.classList.remove('hidden');
-    };
-
-    exportBtn.onclick = () => {
-      if (!lastResults.length) return;
-
-      const header = [
-        'Article URL',
-        'Affiliate Links',
-        'Brand Links',
-        'Affiliate Count',
-        'Direct Count',
-        'Status',
-        'Clicks',
-        'Sales',
-        'Revenue'
-      ];
-
-      const rows = lastResults.map(r => ([
-        r.articleUrl,
-        r.affiliateUrls.join(' | '),
-        r.brandUrls.join(' | '),
-        String(r.affiliateUrls.length),
-        String(r.brandUrls.length),
-        r.error ? `${r.status} (Error: ${r.error})` : r.status,
-        String(r.clicks),
-        String(r.sales),
-        r.revenue.toFixed(2)
-      ]));
-
-      // Add totals row mirroring the table’s Totals
-      const affTotal = lastResults.reduce((s, r) => s + r.affiliateUrls.length, 0);
-      const dirTotal = lastResults.reduce((s, r) => s + r.brandUrls.length, 0);
-      const clicksTotal = lastResults.reduce((s, r) => s + Number(r.clicks || 0), 0);
-      const salesTotal  = lastResults.reduce((s, r) => s + Number(r.sales || 0), 0);
-      const revTotal    = lastResults.reduce((s, r) => s + Number(r.revenue || 0), 0);
-
-      rows.push(['Totals', '', '', String(affTotal), String(dirTotal), '', String(clicksTotal), String(salesTotal), revTotal.toFixed(2)]);
-
-      const csv = [header, ...rows]
-        .map(row => row.map(val => {
-          const s = String(val ?? '');
-          return `"${s.replace(/"/g, '""')}"`;
-        }).join(','))
-        .join('\n');
-
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = 'affiliate_report.csv';
-      document.body.appendChild(a);
-      a.click();
-      URL.revokeObjectURL(a.href);
-      a.remove();
-    };
+    });
   </script>
 </body>
 </html>
